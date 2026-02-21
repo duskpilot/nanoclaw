@@ -1,6 +1,6 @@
 import path from 'path';
 
-import { readEnvFile } from './env.js';
+import { readEnvByPrefix, readEnvFile } from './env.js';
 
 // Read config values from .env (falls back to process.env).
 // Secrets are NOT read here — they stay on disk and are loaded only
@@ -8,6 +8,8 @@ import { readEnvFile } from './env.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_ONLY',
 ]);
 
 export const ASSISTANT_NAME =
@@ -57,8 +59,52 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Telegram configuration
+export const TELEGRAM_ONLY =
+  (process.env.TELEGRAM_ONLY || envConfig.TELEGRAM_ONLY) === 'true';
+
+// Multi-bot: scan for TELEGRAM_BOT_<Name>=<token> in .env
+// Falls back to single TELEGRAM_BOT_TOKEN + ASSISTANT_NAME
+export interface TelegramBotConfig {
+  name: string;
+  token: string;
+}
+
+function parseTelegramBots(): TelegramBotConfig[] {
+  const bots: TelegramBotConfig[] = [];
+
+  // Scan for TELEGRAM_BOT_<Name> keys (exclude TELEGRAM_BOT_TOKEN for backward compat)
+  const botEntries = readEnvByPrefix('TELEGRAM_BOT_');
+  for (const [key, token] of Object.entries(botEntries)) {
+    if (key === 'TELEGRAM_BOT_TOKEN') continue;
+    const name = key.replace('TELEGRAM_BOT_', '');
+    if (name && token) bots.push({ name, token });
+  }
+
+  if (bots.length > 0) return bots;
+
+  // Fallback: single bot via TELEGRAM_BOT_TOKEN
+  const singleToken =
+    process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
+  if (singleToken) {
+    bots.push({ name: ASSISTANT_NAME, token: singleToken });
+  }
+
+  return bots;
+}
+
+export const TELEGRAM_BOTS = parseTelegramBots();
+
+// Legacy single-token export for backward compat
+export const TELEGRAM_BOT_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
+
+// Trigger pattern matches any configured bot name
+const allNames = new Set([ASSISTANT_NAME, ...TELEGRAM_BOTS.map((b) => b.name)]);
+const namePattern = [...allNames].map(escapeRegex).join('|');
+
 export const TRIGGER_PATTERN = new RegExp(
-  `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
+  `^@(${namePattern})\\b`,
   'i',
 );
 

@@ -1,6 +1,6 @@
 import { Bot } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { TRIGGER_PATTERN } from '../config.js';
 import { logger } from '../logger.js';
 import {
   Channel,
@@ -22,10 +22,13 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private assistantName: string;
   private typingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
+  private knownChats: Set<string> = new Set();
 
-  constructor(botToken: string, opts: TelegramChannelOpts) {
+  constructor(botToken: string, assistantName: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
+    this.assistantName = assistantName;
     this.opts = opts;
   }
 
@@ -42,21 +45,22 @@ export class TelegramChannel implements Channel {
           : (ctx.chat as any).title || 'Unknown';
 
       ctx.reply(
-        `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
+        `Chat ID: \`tg:${this.assistantName}:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
         { parse_mode: 'Markdown' },
       );
     });
 
     // Command to check bot status
     this.bot.command('ping', (ctx) => {
-      ctx.reply(`${ASSISTANT_NAME} is online.`);
+      ctx.reply(`${this.assistantName} is online.`);
     });
 
     this.bot.on('message:text', async (ctx) => {
       // Skip commands
       if (ctx.message.text.startsWith('/')) return;
 
-      const chatJid = `tg:${ctx.chat.id}`;
+      const chatJid = `tg:${this.assistantName}:${ctx.chat.id}`;
+      this.knownChats.add(chatJid);
       let content = ctx.message.text;
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
@@ -89,7 +93,7 @@ export class TelegramChannel implements Channel {
           return false;
         });
         if (isBotMentioned && !TRIGGER_PATTERN.test(content)) {
-          content = `@${ASSISTANT_NAME} ${content}`;
+          content = `@${this.assistantName} ${content}`;
         }
       }
 
@@ -125,7 +129,8 @@ export class TelegramChannel implements Channel {
 
     // Handle non-text messages with placeholders so the agent knows something was sent
     const storeNonText = (ctx: any, placeholder: string) => {
-      const chatJid = `tg:${ctx.chat.id}`;
+      const chatJid = `tg:${this.assistantName}:${ctx.chat.id}`;
+      this.knownChats.add(chatJid);
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
 
@@ -152,7 +157,8 @@ export class TelegramChannel implements Channel {
     this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', async (ctx) => {
-      const chatJid = `tg:${ctx.chat.id}`;
+      const chatJid = `tg:${this.assistantName}:${ctx.chat.id}`;
+      this.knownChats.add(chatJid);
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
 
@@ -219,10 +225,10 @@ export class TelegramChannel implements Channel {
       this.bot!.start({
         onStart: (botInfo) => {
           logger.info(
-            { username: botInfo.username, id: botInfo.id },
+            { username: botInfo.username, id: botInfo.id, assistantName: this.assistantName },
             'Telegram bot connected',
           );
-          console.log(`\n  Telegram bot: @${botInfo.username}`);
+          console.log(`\n  Telegram bot: @${botInfo.username} (${this.assistantName})`);
           console.log(
             `  Send /chatid to the bot to get a chat's registration ID\n`,
           );
@@ -239,23 +245,28 @@ export class TelegramChannel implements Channel {
     }
 
     try {
-      const numericId = jid.replace(/^tg:/, '');
+      // Clear typing indicator before sending
+      await this.setTyping(jid, false);
+
+      const numericId = jid.replace(/^tg:[^:]+:/, '');
 
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
-      if (text.length <= MAX_LENGTH) {
-        await this.bot.api.sendMessage(numericId, text, {
-          parse_mode: 'Markdown',
-        });
-      } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await this.bot.api.sendMessage(
-            numericId,
-            text.slice(i, i + MAX_LENGTH),
-            {
-              parse_mode: 'Markdown',
-            },
-          );
+      const chunks =
+        text.length <= MAX_LENGTH
+          ? [text]
+          : Array.from({ length: Math.ceil(text.length / MAX_LENGTH) }, (_, i) =>
+              text.slice(i * MAX_LENGTH, (i + 1) * MAX_LENGTH),
+            );
+
+      for (const chunk of chunks) {
+        try {
+          await this.bot.api.sendMessage(numericId, chunk, {
+            parse_mode: 'Markdown',
+          });
+        } catch {
+          // Markdown parse failed (unbalanced chars etc.) — send as plain text
+          await this.bot.api.sendMessage(numericId, chunk);
         }
       }
       logger.info({ jid, length: text.length }, 'Telegram message sent');
@@ -269,7 +280,7 @@ export class TelegramChannel implements Channel {
   }
 
   ownsJid(jid: string): boolean {
-    return jid.startsWith('tg:');
+    return jid.startsWith(`tg:${this.assistantName}:`);
   }
 
   async disconnect(): Promise<void> {
@@ -280,7 +291,7 @@ export class TelegramChannel implements Channel {
     if (this.bot) {
       this.bot.stop();
       this.bot = null;
-      logger.info('Telegram bot stopped');
+      logger.info({ assistantName: this.assistantName }, 'Telegram bot stopped');
     }
   }
 
@@ -299,7 +310,7 @@ export class TelegramChannel implements Channel {
     // Already running for this chat
     if (this.typingIntervals.has(jid)) return;
 
-    const numericId = jid.replace(/^tg:/, '');
+    const numericId = jid.replace(/^tg:[^:]+:/, '');
 
     const send = async () => {
       try {
