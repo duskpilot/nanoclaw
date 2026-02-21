@@ -10,15 +10,17 @@ interface TranscriptionConfig {
 }
 
 const DEFAULT_CONFIG: TranscriptionConfig = {
-  model: 'whisper-large-v3-turbo',
+  model: process.env.WHISPER_MODEL || 'whisper-large-v3-turbo',
   enabled: true,
   fallbackMessage: '[Voice Message - transcription unavailable]',
 };
 
-async function transcribeWithOpenAI(
-  audioBuffer: Buffer,
-  config: TranscriptionConfig,
-): Promise<string | null> {
+// Lazy singleton — initialized once on first use
+let clientCache: { client: any; toFile: any } | null = null;
+
+async function getClient(): Promise<{ client: any; toFile: any } | null> {
+  if (clientCache) return clientCache;
+
   const env = readEnvFile(['GROQ_API_KEY', 'OPENAI_API_KEY']);
   const apiKey = env.GROQ_API_KEY || env.OPENAI_API_KEY;
 
@@ -31,22 +33,31 @@ async function transcribeWithOpenAI(
     ? 'https://api.groq.com/openai/v1'
     : undefined;
 
+  const openaiModule = await import('openai');
+  const OpenAI = openaiModule.default;
+
+  clientCache = {
+    client: new OpenAI({ apiKey, baseURL }),
+    toFile: openaiModule.toFile,
+  };
+
+  return clientCache;
+}
+
+async function transcribeWithOpenAI(
+  audioBuffer: Buffer,
+  config: TranscriptionConfig,
+): Promise<string | null> {
+  const cached = await getClient();
+  if (!cached) return null;
+
   try {
-    const openaiModule = await import('openai');
-    const OpenAI = openaiModule.default;
-    const toFile = openaiModule.toFile;
-
-    const openai = new OpenAI({
-      apiKey,
-      baseURL
-    });
-
-    const file = await toFile(audioBuffer, 'voice.ogg', {
+    const file = await cached.toFile(audioBuffer, 'voice.ogg', {
       type: 'audio/ogg',
     });
 
-    const transcription = await openai.audio.transcriptions.create({
-      file: file,
+    const transcription = await cached.client.audio.transcriptions.create({
+      file,
       model: config.model,
       response_format: 'text',
     });
