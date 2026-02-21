@@ -11,6 +11,7 @@ structured:
   npm_dependencies:
     openai: "^4.77.0"
   env_additions:
+    - GROQ_API_KEY
     - OPENAI_API_KEY
 conflicts: []
 depends: []

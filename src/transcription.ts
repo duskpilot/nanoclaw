@@ -103,3 +103,33 @@ export async function transcribeAudioMessage(
 export function isVoiceMessage(msg: WAMessage): boolean {
   return msg.message?.audioMessage?.ptt === true;
 }
+
+export async function transcribeAudioBuffer(
+  audioBuffer: Buffer,
+): Promise<string | null> {
+  const config = DEFAULT_CONFIG;
+
+  if (!config.enabled) {
+    return null;
+  }
+
+  try {
+    if (!audioBuffer || audioBuffer.length === 0) {
+      console.error('Invalid audio buffer');
+      return null;
+    }
+
+    console.log(`Transcribing audio buffer: ${audioBuffer.length} bytes`);
+
+    const transcript = await transcribeWithOpenAI(audioBuffer, config);
+
+    if (!transcript) {
+      return null;
+    }
+
+    return transcript.trim();
+  } catch (err) {
+    console.error('Transcription error:', err);
+    return null;
+  }
+}
