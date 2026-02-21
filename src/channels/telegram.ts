@@ -154,7 +154,59 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:photo', async (ctx) => {
+      const chatJid = `tg:${this.assistantName}:${ctx.chat.id}`;
+      this.knownChats.add(chatJid);
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+
+      try {
+        // Get the highest resolution photo
+        const photos = ctx.message.photo;
+        const photo = photos[photos.length - 1];
+
+        // Download the photo
+        const file = await ctx.getFile();
+        const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        // Download the image
+        const response = await fetch(fileUrl);
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+
+        // Convert to base64 for Claude
+        const base64Image = buffer.toString('base64');
+        const mediaType = file.file_path?.endsWith('.png') ? 'image/png' : 'image/jpeg';
+
+        const caption = ctx.message.caption || '';
+        const content = caption
+          ? `[Image] ${caption}\n\n<image data="${mediaType};base64,${base64Image}" />`
+          : `<image data="${mediaType};base64,${base64Image}" />`;
+
+        this.opts.onChatMetadata(chatJid, timestamp);
+        this.opts.onMessage(chatJid, {
+          id: ctx.message.message_id.toString(),
+          chat_jid: chatJid,
+          sender: ctx.from?.id?.toString() || '',
+          sender_name: senderName,
+          content,
+          timestamp,
+          is_from_me: false,
+        });
+
+        logger.info({ chatJid, size: buffer.length }, 'Telegram photo processed');
+      } catch (err) {
+        logger.error({ err }, 'Failed to process Telegram photo');
+        storeNonText(ctx, '[Photo]');
+      }
+    });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', async (ctx) => {
       const chatJid = `tg:${this.assistantName}:${ctx.chat.id}`;
