@@ -376,8 +376,10 @@ async function startMessageLoop(): Promise<void> {
               logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
             );
           } else {
-            // No active container — enqueue for a new one
-            queue.enqueueMessageCheck(chatJid);
+            // No active container — enqueue for a new one (guard against race with recovery)
+            if (!queue.isActive(chatJid)) {
+              queue.enqueueMessageCheck(chatJid);
+            }
           }
         }
       }
@@ -396,7 +398,7 @@ function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
     const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
     const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
-    if (pending.length > 0) {
+    if (pending.length > 0 && !queue.isActive(chatJid)) {
       logger.info(
         { group: group.name, pendingCount: pending.length },
         'Recovery: found unprocessed messages',
@@ -411,7 +413,34 @@ function ensureContainerSystemRunning(): void {
   cleanupOrphans();
 }
 
+/**
+ * Acquire a PID-based process lock to prevent multiple instances.
+ * Defense-in-depth alongside systemd KillMode=control-group.
+ */
+function acquireProcessLock(): void {
+  const lockPath = path.join(DATA_DIR, 'nanoclaw.lock');
+  try {
+    const existingPid = parseInt(fs.readFileSync(lockPath, 'utf-8').trim(), 10);
+    if (existingPid && existingPid !== process.pid) {
+      try {
+        process.kill(existingPid, 0); // Signal 0 = check if process exists
+        logger.error({ pid: existingPid }, 'Another NanoClaw instance is already running');
+        process.exit(1);
+      } catch {
+        logger.warn({ stalePid: existingPid }, 'Removing stale lock file');
+      }
+    }
+  } catch {
+    // No lock file exists, proceed
+  }
+  fs.writeFileSync(lockPath, process.pid.toString());
+  process.on('exit', () => {
+    try { fs.unlinkSync(lockPath); } catch {}
+  });
+}
+
 async function main(): Promise<void> {
+  acquireProcessLock();
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');

@@ -281,6 +281,9 @@ export class TelegramChannel implements Channel {
         return;
       }
 
+      // Start typing immediately for instant feedback
+      this.setTyping(chatJid, true).catch(() => {});
+
       // Deliver message — startMessageLoop() will pick it up
       this.opts.onMessage(chatJid, {
         id: msgId,
