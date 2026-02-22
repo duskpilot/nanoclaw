@@ -192,6 +192,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         // Use streaming if channel supports it
         if (channel.supportsStreaming?.()) {
           if (!streamingActive && accumulatedText.length >= 150) {
+            // Turn off typing indicator before first streaming message
+            await channel.setTyping?.(chatJid, false);
+
             // Start streaming with initial text
             await channel.startStreamingMessage?.(chatJid, accumulatedText);
             streamingActive = true;
@@ -220,7 +223,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   });
 
-  await channel.setTyping?.(chatJid, false);
+  // Only clear typing if streaming wasn't active (streaming already cleared it)
+  if (!streamingActive) {
+    await channel.setTyping?.(chatJid, false);
+  }
   if (idleTimer) clearTimeout(idleTimer);
 
   // Finalize streaming message if active
