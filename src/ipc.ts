@@ -406,6 +406,18 @@ export async function processTaskIpc(
         break;
       }
       logger.info({ sourceGroup }, 'Restart requested via IPC — exiting (systemd will restart)');
+      // Save restart context so we can notify after coming back up
+      try {
+        const restartMarkerPath = path.join(DATA_DIR, 'restart-pending.json');
+        // Find which chat JIDs belong to this group
+        const allGroups = deps.registeredGroups();
+        const restartJids = Object.entries(allGroups)
+          .filter(([, g]) => g.folder === sourceGroup)
+          .map(([jid]) => jid);
+        fs.writeFileSync(restartMarkerPath, JSON.stringify({ sourceGroup, chatJids: restartJids }));
+      } catch (err) {
+        logger.warn({ err }, 'Failed to write restart marker');
+      }
       // Short delay so the IPC file is cleaned up before exit
       setTimeout(() => process.exit(0), 500);
       break;

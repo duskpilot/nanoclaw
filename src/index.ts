@@ -451,6 +451,27 @@ async function main(): Promise<void> {
     await telegram.connect();
   }
 
+  // Check for restart marker and notify user we're back
+  const restartMarkerPath = path.join(DATA_DIR, 'restart-pending.json');
+  try {
+    if (fs.existsSync(restartMarkerPath)) {
+      const marker = JSON.parse(fs.readFileSync(restartMarkerPath, 'utf-8'));
+      fs.unlinkSync(restartMarkerPath);
+      if (marker.chatJids && Array.isArray(marker.chatJids)) {
+        for (const jid of marker.chatJids) {
+          const channel = findChannel(channels, jid);
+          if (channel) {
+            channel.sendMessage(jid, 'Restarted successfully.').catch((err) =>
+              logger.warn({ jid, err }, 'Failed to send restart notification'),
+            );
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to process restart marker');
+  }
+
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,

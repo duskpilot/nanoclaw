@@ -3,7 +3,11 @@
     "allow": [
       "Bash(systemctl status:*)",
       "Bash(docker run:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(npm run:*)",
+      "Bash(sqlite3:*)",
+      "Bash(systemctl:*)",
+      "Bash(git:*)"
     ]
   }
 }
