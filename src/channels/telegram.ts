@@ -84,6 +84,8 @@ export class TelegramChannel implements Channel {
   private assistantName: string;
   private typingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
   private knownChats: Set<string> = new Set();
+  private botUserId: number | null = null;
+  private botUsername: string | null = null;
 
   constructor(botToken: string, assistantName: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -135,11 +137,37 @@ export class TelegramChannel implements Channel {
           ? senderName
           : (ctx.chat as any).title || chatJid;
 
-      // Translate Telegram @bot_username mentions into TRIGGER_PATTERN format.
-      // Telegram @mentions (e.g., @andy_ai_bot) won't match TRIGGER_PATTERN
-      // (e.g., ^@Andy\b), so we prepend the trigger when the bot is @mentioned.
-      const botUsername = ctx.me?.username?.toLowerCase();
-      if (botUsername) {
+      // Store chat metadata for discovery
+      this.opts.onChatMetadata(chatJid, timestamp, chatName);
+
+      // Only deliver full message for registered groups
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) {
+        logger.debug(
+          { chatJid, chatName },
+          'Message from unregistered Telegram chat',
+        );
+        return;
+      }
+
+      // RECIPIENT DETECTION: Check if this message is intended for THIS bot
+      let isIntendedForThisBot = false;
+
+      // Check if message is a reply to this bot's message
+      if (ctx.message.reply_to_message) {
+        const replyToUserId = ctx.message.reply_to_message.from?.id;
+        if (replyToUserId === this.botUserId) {
+          isIntendedForThisBot = true;
+          logger.debug(
+            { chatJid, botName: this.assistantName },
+            'Message is reply to this bot',
+          );
+        }
+      }
+
+      // Check if message mentions this bot specifically
+      const botUsername = this.botUsername || ctx.me?.username?.toLowerCase();
+      if (!isIntendedForThisBot && botUsername) {
         const entities = ctx.message.entities || [];
         const isBotMentioned = entities.some((entity) => {
           if (entity.type === 'mention') {
@@ -150,20 +178,105 @@ export class TelegramChannel implements Channel {
           }
           return false;
         });
-        if (isBotMentioned && !TRIGGER_PATTERN.test(content)) {
-          content = `@${this.assistantName} ${content}`;
+        if (isBotMentioned) {
+          isIntendedForThisBot = true;
+          logger.debug(
+            { chatJid, botName: this.assistantName },
+            'Message mentions this bot',
+          );
+          // Translate Telegram @bot_username mentions into TRIGGER_PATTERN format
+          if (!TRIGGER_PATTERN.test(content)) {
+            content = `@${this.assistantName} ${content}`;
+          }
         }
       }
 
-      // Store chat metadata for discovery
-      this.opts.onChatMetadata(chatJid, timestamp, chatName);
+      // Check if message contains trigger word (for groups with requiresTrigger)
+      if (!isIntendedForThisBot && group.requiresTrigger !== false) {
+        // Extract the trigger pattern for this specific bot
+        const triggerMatch = content.match(TRIGGER_PATTERN);
+        if (triggerMatch) {
+          const mentionedName = triggerMatch[1].toLowerCase();
+          const thisAssistantName = this.assistantName.toLowerCase();
+          if (mentionedName === thisAssistantName) {
+            isIntendedForThisBot = true;
+            logger.debug(
+              { chatJid, botName: this.assistantName, trigger: mentionedName },
+              'Message contains this bot\'s trigger',
+            );
+          }
+        }
+      }
 
-      // Only deliver full message for registered groups
-      const group = this.opts.registeredGroups()[chatJid];
-      if (!group) {
+      // For chats with requiresTrigger: false, check if any specific bot is mentioned
+      // If another bot is mentioned, skip processing for this bot
+      if (!isIntendedForThisBot && group.requiresTrigger === false) {
+        // Check if ANY bot is mentioned via @username
+        const entities = ctx.message.entities || [];
+        const mentionedBotUsername = entities.find((entity) => {
+          if (entity.type === 'mention') {
+            const mentionText = content
+              .substring(entity.offset, entity.offset + entity.length)
+              .toLowerCase();
+            // Check if it's a bot mention (starts with @)
+            return mentionText.startsWith('@') && mentionText.includes('bot');
+          }
+          return false;
+        });
+
+        // Check if ANY trigger pattern is present in the message
+        const triggerMatch = content.match(TRIGGER_PATTERN);
+
+        if (mentionedBotUsername || triggerMatch) {
+          // A specific bot was mentioned - check if it's this one
+          if (botUsername) {
+            const entities = ctx.message.entities || [];
+            const isBotMentioned = entities.some((entity) => {
+              if (entity.type === 'mention') {
+                const mentionText = content
+                  .substring(entity.offset, entity.offset + entity.length)
+                  .toLowerCase();
+                return mentionText === `@${botUsername}`;
+              }
+              return false;
+            });
+            if (isBotMentioned) {
+              isIntendedForThisBot = true;
+            }
+          }
+
+          if (triggerMatch) {
+            const mentionedName = triggerMatch[1].toLowerCase();
+            const thisAssistantName = this.assistantName.toLowerCase();
+            if (mentionedName === thisAssistantName) {
+              isIntendedForThisBot = true;
+            }
+          }
+
+          // If a specific bot was mentioned but it wasn't this one, skip
+          if (!isIntendedForThisBot) {
+            logger.debug(
+              { chatJid, botName: this.assistantName },
+              'Message intended for different bot, skipping',
+            );
+            return;
+          }
+        } else {
+          // No specific bot mentioned and requiresTrigger is false
+          // This is a general message - all bots should process it
+          isIntendedForThisBot = true;
+          logger.debug(
+            { chatJid, botName: this.assistantName },
+            'No specific bot mentioned, processing as general message',
+          );
+        }
+      }
+
+      // If not intended for this bot, skip processing
+      if (!isIntendedForThisBot) {
         logger.debug(
-          { chatJid, chatName },
-          'Message from unregistered Telegram chat',
+          { chatJid, botName: this.assistantName },
+          'Message not intended for this bot, skipping',
         );
         return;
       }
@@ -180,7 +293,7 @@ export class TelegramChannel implements Channel {
       });
 
       logger.info(
-        { chatJid, chatName, sender: senderName },
+        { chatJid, chatName, sender: senderName, botName: this.assistantName },
         'Telegram message stored',
       );
     });
@@ -334,6 +447,10 @@ export class TelegramChannel implements Channel {
     return new Promise<void>((resolve) => {
       this.bot!.start({
         onStart: (botInfo) => {
+          // Store bot's own user ID and username for recipient detection
+          this.botUserId = botInfo.id;
+          this.botUsername = botInfo.username?.toLowerCase() || null;
+
           logger.info(
             { username: botInfo.username, id: botInfo.id, assistantName: this.assistantName },
             'Telegram bot connected',
