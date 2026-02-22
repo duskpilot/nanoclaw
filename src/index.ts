@@ -175,11 +175,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
-  let streamingActive = false;
-  let accumulatedText = '';
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
+    // Output callback — called for each agent result
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
@@ -187,28 +185,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
 
       if (text) {
-        accumulatedText = text; // Replace with latest (streaming replaces, not appends)
-
-        // Use streaming if channel supports it
-        if (channel.supportsStreaming?.()) {
-          if (!streamingActive && accumulatedText.length >= 150) {
-            // Turn off typing indicator before first streaming message
-            await channel.setTyping?.(chatJid, false);
-
-            // Start streaming with initial text
-            await channel.startStreamingMessage?.(chatJid, accumulatedText);
-            streamingActive = true;
-            outputSentToUser = true;
-          } else if (streamingActive) {
-            // Update streaming preview
-            await channel.updateStreamingMessage?.(chatJid, accumulatedText);
-          }
-          // If text < 150 chars, wait for more before starting stream
-        } else {
-          // Channel doesn't support streaming, send normally
-          await channel.sendMessage(chatJid, text);
-          outputSentToUser = true;
-        }
+        await channel.sendMessage(chatJid, text);
+        outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
@@ -223,27 +201,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   });
 
-  // Only clear typing if streaming wasn't active (streaming already cleared it)
-  if (!streamingActive) {
-    await channel.setTyping?.(chatJid, false);
-  }
+  await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
-  // Finalize streaming message if active
-  if (streamingActive) {
-    await channel.finalizeStreamingMessage?.(chatJid, accumulatedText);
-  } else if (accumulatedText && channel.supportsStreaming?.()) {
-    // Text was too short for streaming, send it now
-    await channel.sendMessage(chatJid, accumulatedText);
-    outputSentToUser = true;
-  }
-
   if (output === 'error' || hadError) {
-    // Cancel streaming if active
-    if (streamingActive) {
-      await channel.cancelStreamingMessage?.(chatJid);
-    }
-
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {

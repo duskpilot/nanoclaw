@@ -87,14 +87,6 @@ export interface Channel {
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
-
-  // Optional: streaming message support (Telegram-only)
-  // Allows editing a preview message in real-time as content arrives
-  supportsStreaming?(): boolean;
-  startStreamingMessage?(jid: string, initialText: string): Promise<void>;
-  updateStreamingMessage?(jid: string, additionalText: string): Promise<void>;
-  finalizeStreamingMessage?(jid: string, finalText: string): Promise<void>;
-  cancelStreamingMessage?(jid: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

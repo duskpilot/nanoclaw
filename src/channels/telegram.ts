@@ -16,11 +16,6 @@ export interface TelegramChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
-// Streaming configuration
-const STREAM_EDIT_INTERVAL_MS = 2000; // Edit every 2 seconds
-const STREAM_MIN_CHARS = 150; // Minimum chars before starting streaming
-const STREAM_MAX_PREVIEW_CHARS = 4000; // Max preview size (leave buffer for "...")
-
 export class TelegramChannel implements Channel {
   name = 'telegram';
 
@@ -30,12 +25,6 @@ export class TelegramChannel implements Channel {
   private assistantName: string;
   private typingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
   private knownChats: Set<string> = new Set();
-  private streamingPreviews: Map<string, {
-    messageId: number;
-    lastEdit: number;
-    accumulatedText: string;
-    editTimer: ReturnType<typeof setTimeout> | null;
-  }> = new Map();
 
   constructor(botToken: string, assistantName: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -415,130 +404,5 @@ export class TelegramChannel implements Channel {
     // Send immediately, then repeat every 4s (Telegram shows it for ~5s)
     await send();
     this.typingIntervals.set(jid, setInterval(send, 4000));
-  }
-
-  supportsStreaming(): boolean {
-    return true;
-  }
-
-  async startStreamingMessage(jid: string, initialText: string): Promise<void> {
-    if (!this.bot) return;
-
-    try {
-      const numericId = jid.replace(/^tg:[^:]+:/, '');
-
-      // Send first chunk as new message
-      await this.bot.api.sendMessage(numericId, initialText);
-
-      this.streamingPreviews.set(numericId, {
-        messageId: 0, // Not used for new-message approach
-        lastEdit: Date.now(),
-        accumulatedText: initialText,
-        editTimer: null,
-      });
-
-      logger.debug({ jid }, 'Started streaming (new messages)');
-    } catch (err) {
-      logger.error({ err, jid }, 'Failed to start streaming message');
-    }
-  }
-
-  async updateStreamingMessage(jid: string, additionalText: string): Promise<void> {
-    if (!this.bot) return;
-
-    const numericId = jid.replace(/^tg:[^:]+:/, '');
-    const preview = this.streamingPreviews.get(numericId);
-
-    if (!preview) {
-      logger.debug({ jid }, 'No streaming preview found, ignoring update');
-      return;
-    }
-
-    // Check if new content is significantly different from what we already sent
-    const newContent = additionalText.substring(preview.accumulatedText.length);
-    if (newContent.length < 100) {
-      // Not enough new content to send another message yet
-      preview.accumulatedText = additionalText;
-      return;
-    }
-
-    // Cancel existing timer if any
-    if (preview.editTimer) {
-      clearTimeout(preview.editTimer);
-    }
-
-    // Schedule sending new message if enough time has passed
-    const timeSinceLastEdit = Date.now() - preview.lastEdit;
-    const delay = Math.max(0, STREAM_EDIT_INTERVAL_MS - timeSinceLastEdit);
-
-    preview.editTimer = setTimeout(async () => {
-      try {
-        // Send the new content as a new message
-        await this.bot!.api.sendMessage(numericId, newContent);
-
-        preview.accumulatedText = additionalText;
-        preview.lastEdit = Date.now();
-        preview.editTimer = null;
-
-        logger.debug({ jid, newChars: newContent.length }, 'Sent streaming chunk');
-      } catch (err) {
-        logger.debug({ err, jid }, 'Failed to send streaming chunk');
-      }
-    }, delay);
-  }
-
-  async finalizeStreamingMessage(jid: string, finalText: string): Promise<void> {
-    if (!this.bot) return;
-
-    const numericId = jid.replace(/^tg:[^:]+:/, '');
-    const preview = this.streamingPreviews.get(numericId);
-
-    if (preview) {
-      // Cancel any pending send
-      if (preview.editTimer) {
-        clearTimeout(preview.editTimer);
-      }
-
-      // Send any remaining content that wasn't sent yet
-      const remainingContent = finalText.substring(preview.accumulatedText.length);
-
-      if (remainingContent.trim()) {
-        try {
-          const chunks = this.chunkByParagraph(remainingContent, 4096);
-          for (const chunk of chunks) {
-            try {
-              await this.bot.api.sendMessage(numericId, chunk, {
-                parse_mode: 'Markdown',
-              });
-            } catch {
-              // Fallback to plain text
-              await this.bot.api.sendMessage(numericId, chunk);
-            }
-          }
-          logger.debug({ jid, chars: remainingContent.length }, 'Sent final streaming chunks');
-        } catch (err) {
-          logger.debug({ err, jid }, 'Failed to send final chunks');
-        }
-      }
-
-      // Cleanup
-      this.streamingPreviews.delete(numericId);
-    } else {
-      // No preview, just send normally
-      await this.sendMessage(jid, finalText);
-    }
-  }
-
-  async cancelStreamingMessage(jid: string): Promise<void> {
-    const numericId = jid.replace(/^tg:[^:]+:/, '');
-    const preview = this.streamingPreviews.get(numericId);
-
-    if (preview) {
-      if (preview.editTimer) {
-        clearTimeout(preview.editTimer);
-      }
-      this.streamingPreviews.delete(numericId);
-      logger.debug({ jid }, 'Cancelled streaming message');
-    }
   }
 }
