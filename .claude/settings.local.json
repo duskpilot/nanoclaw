@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsx:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run:*)",
+      "Bash(/home/forge/nanoclaw/.claude/skills/setup/scripts/06-register-channel.sh:*)",
+      "Bash(systemctl:*)",
+      "Bash(grep:*)",
+      "Bash(node:*)",
+      "Bash(tail:*)",
+      "Bash(journalctl:*)",
+      "Bash(sqlite3:*)",
+      "Bash(sleep 1:*)"
+    ]
+  }
+}
