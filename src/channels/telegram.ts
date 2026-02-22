@@ -10,6 +10,65 @@ import {
 } from '../types.js';
 import { transcribeAudioBuffer } from '../transcription.js';
 
+/**
+ * Convert standard Markdown to Telegram-compatible HTML.
+ * HTML only requires escaping <, >, & — far more robust than MarkdownV2.
+ */
+export function markdownToTelegramHtml(md: string): string {
+  // 1. Extract fenced code blocks and inline code → placeholders
+  const codeBlocks: string[] = [];
+  const inlineCodes: string[] = [];
+
+  // Fenced code blocks first (``` ... ```)
+  let text = md.replace(/```(?:\w*)\n?([\s\S]*?)```/g, (_match, code) => {
+    const i = codeBlocks.length;
+    codeBlocks.push(code.replace(/\n$/, ''));
+    return `\x00CODEBLOCK${i}\x00`;
+  });
+
+  // Inline code (` ... `)
+  text = text.replace(/`([^`\n]+)`/g, (_match, code) => {
+    const i = inlineCodes.length;
+    inlineCodes.push(code);
+    return `\x00INLINE${i}\x00`;
+  });
+
+  // 2. HTML-escape remaining text
+  text = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 3. Convert formatting constructs
+  // Bold: **text** (process before italic)
+  text = text.replace(/\*\*([^\n*]+)\*\*/g, '<b>$1</b>');
+  // Italic: *text* — require non-space after opening * to avoid bullet lists
+  text = text.replace(/\*([^\n*]+)\*/g, '<i>$1</i>');
+  // Strikethrough: ~~text~~
+  text = text.replace(/~~(.+?)~~/g, '<s>$1</s>');
+  // Links: [text](url)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+  // 4. Re-insert code with HTML escaping
+  text = text.replace(/\x00INLINE(\d+)\x00/g, (_match, i) => {
+    const code = inlineCodes[parseInt(i)]
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return `<code>${code}</code>`;
+  });
+
+  text = text.replace(/\x00CODEBLOCK(\d+)\x00/g, (_match, i) => {
+    const code = codeBlocks[parseInt(i)]
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return `<pre>${code}</pre>`;
+  });
+
+  return text;
+}
+
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
@@ -301,15 +360,22 @@ export class TelegramChannel implements Channel {
 
       const numericId = jid.replace(/^tg:[^:]+:/, '');
 
-      // Telegram has a 4096 character limit per message — split if needed
-      const MAX_LENGTH = 4096;
-
-      // Use smart paragraph chunking
-      const chunks = this.chunkByParagraph(text, MAX_LENGTH);
+      // Chunk plain text at 3800 chars (leaves room for HTML tag overhead within 4096 limit)
+      const chunks = this.chunkByParagraph(text, 3800);
 
       for (const chunk of chunks) {
-        // Send with MarkdownV2 formatting enabled
-        await this.bot.api.sendMessage(numericId, chunk, { parse_mode: 'MarkdownV2' });
+        const html = markdownToTelegramHtml(chunk);
+        try {
+          await this.bot.api.sendMessage(numericId, html, { parse_mode: 'HTML' });
+        } catch (htmlErr: any) {
+          // Fallback: if HTML send fails (400 error), retry as plain text
+          if (htmlErr?.error_code === 400) {
+            logger.warn({ jid }, 'HTML send failed, falling back to plain text');
+            await this.bot.api.sendMessage(numericId, chunk);
+          } else {
+            throw htmlErr;
+          }
+        }
       }
       logger.info({ jid, length: text.length, chunks: chunks.length }, 'Telegram message sent');
     } catch (err) {
