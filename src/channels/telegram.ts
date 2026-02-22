@@ -25,9 +25,6 @@ export class TelegramChannel implements Channel {
   private assistantName: string;
   private typingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
   private knownChats: Set<string> = new Set();
-  private ackReactions: Map<string, { chatId: number; messageId: number }> = new Map();
-  private ackMessageIds: Map<string, number> = new Map(); // Track acknowledgment message IDs
-  private ackReactionEmoji = '👀'; // Default ACK emoji
 
   constructor(botToken: string, assistantName: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -111,18 +108,6 @@ export class TelegramChannel implements Channel {
           'Message from unregistered Telegram chat',
         );
         return;
-      }
-
-      // Send ACK reaction immediately
-      try {
-        await ctx.react('👀' as const);
-        this.ackReactions.set(msgId, {
-          chatId: ctx.chat.id,
-          messageId: ctx.message.message_id,
-        });
-        logger.debug({ chatJid, msgId }, 'ACK reaction sent');
-      } catch (err) {
-        logger.error({ err, chatJid }, 'Failed to send ACK reaction');
       }
 
       // Deliver message — startMessageLoop() will pick it up
@@ -317,34 +302,6 @@ export class TelegramChannel implements Channel {
 
       const numericId = jid.replace(/^tg:[^:]+:/, '');
 
-      // Remove ACK reaction if it exists (find the original message that triggered this response)
-      // Look through recent ACK reactions for this chat
-      for (const [msgId, reaction] of this.ackReactions.entries()) {
-        if (reaction.chatId.toString() === numericId) {
-          try {
-            // Remove reaction by setting it to empty array
-            await this.bot.api.setMessageReaction(reaction.chatId, reaction.messageId, []);
-            this.ackReactions.delete(msgId);
-            logger.debug({ jid, msgId }, 'ACK reaction removed');
-            break; // Only remove one (the most recent)
-          } catch (err) {
-            logger.debug({ err }, 'Failed to remove ACK reaction');
-          }
-        }
-      }
-
-      // Delete acknowledgment message if it exists
-      const ackMsgId = this.ackMessageIds.get(numericId);
-      if (ackMsgId) {
-        try {
-          await this.bot.api.deleteMessage(numericId, ackMsgId);
-          this.ackMessageIds.delete(numericId);
-          logger.debug({ jid }, 'Acknowledgment message deleted');
-        } catch (err) {
-          logger.debug({ err }, 'Failed to delete acknowledgment message');
-        }
-      }
-
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
 
@@ -364,23 +321,6 @@ export class TelegramChannel implements Channel {
       logger.info({ jid, length: text.length, chunks: chunks.length }, 'Telegram message sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
-    }
-  }
-
-  /**
-   * Send instant acknowledgment message
-   * Returns message ID for later deletion/editing
-   */
-  async sendAck(jid: string, ackText: string): Promise<void> {
-    if (!this.bot) return;
-
-    try {
-      const numericId = jid.replace(/^tg:[^:]+:/, '');
-      const msg = await this.bot.api.sendMessage(numericId, ackText);
-      this.ackMessageIds.set(numericId, msg.message_id);
-      logger.debug({ jid }, 'Acknowledgment message sent');
-    } catch (err) {
-      logger.error({ err, jid }, 'Failed to send acknowledgment');
     }
   }
 

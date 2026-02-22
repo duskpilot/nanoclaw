@@ -77,6 +77,16 @@ When enabled:
 - All bots can send messages to other bots using `send_message` with `target_chat_jid`
 - Useful for delegation and coordination between specialized bots
 
+## Restarting NanoClaw
+
+To fully restart NanoClaw (kills all agent containers and restarts the service):
+
+```bash
+touch /workspace/project/data/restart-trigger
+```
+
+A systemd path unit on the host watches for this file and runs the restart automatically. **This will terminate your own session**, so send any final message to the user before triggering it.
+
 ## Container Mounts
 
 Main has access to the entire project:

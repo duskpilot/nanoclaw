@@ -161,18 +161,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     'Processing messages',
   );
 
-  // Send instant acknowledgment for Telegram (OpenClaw-style)
-  // Check if this is a complex/long request that would benefit from instant feedback
-  const shouldSendAck = prompt.length > 200 || /research|search|analyze|build|implement|create|write|fix|debug/i.test(prompt);
-  if (shouldSendAck && 'sendAck' in channel && typeof (channel as any).sendAck === 'function') {
-    try {
-      await (channel as any).sendAck(chatJid, '_Processing..._');
-      logger.debug({ group: group.name }, 'Instant acknowledgment sent');
-    } catch (err) {
-      logger.debug({ err }, 'Failed to send instant acknowledgment');
-    }
-  }
-
   // Track idle timer for closing stdin when agent is idle
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
