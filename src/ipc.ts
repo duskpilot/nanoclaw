@@ -74,13 +74,39 @@ export function startIpcWatcher(deps: IpcDeps): void {
               if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
+                const isSameGroup = targetGroup && targetGroup.folder === sourceGroup;
+                const isCrossBotMessage = !isSameGroup;
+
+                // Check inter-bot communication feature flag
+                if (isCrossBotMessage && !isMain) {
+                  const configPath = path.join(DATA_DIR, 'system_config.json');
+                  let interBotEnabled = false;
+                  try {
+                    if (fs.existsSync(configPath)) {
+                      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+                      interBotEnabled = config.features?.inter_bot_communication?.enabled || false;
+                    }
+                  } catch (err) {
+                    logger.error({ err }, 'Error reading system config');
+                  }
+
+                  if (!interBotEnabled) {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'Inter-bot communication disabled - message blocked',
+                    );
+                    fs.unlinkSync(filePath);
+                    continue;
+                  }
+                }
+
                 if (
                   isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
+                  isSameGroup
                 ) {
                   await deps.sendMessage(data.chatJid, data.text);
                   logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
+                    { chatJid: data.chatJid, sourceGroup, crossBot: isCrossBotMessage },
                     'IPC message sent',
                   );
                 } else {

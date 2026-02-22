@@ -18,6 +18,27 @@ Your output is sent to the user or group.
 
 You also have `mcp__nanoclaw__send_message` which sends a message immediately while you're still working. This is useful when you want to acknowledge a request before starting longer work.
 
+### Inter-bot communication
+
+**This feature must be enabled by admin first.** Check status with `mcp__nanoclaw__get_system_config`.
+
+When enabled, you can communicate with other bots/chats using the `send_message` tool with the `target_chat_jid` parameter:
+
+1. Use `mcp__nanoclaw__list_chats` to see all available bots and their JIDs
+2. Use `mcp__nanoclaw__send_message` with `target_chat_jid` set to the destination JID
+3. Set the `sender` parameter to identify yourself (e.g., "Tomo", "Criterion")
+
+Example use cases:
+- Delegating tasks to specialized bots
+- Sharing information between conversations
+- Coordinating multi-bot workflows
+
+*Authorization:*
+- Feature must be enabled by admin via `mcp__nanoclaw__toggle_inter_bot_communication`
+- Main group can always send to any chat
+- Other groups can only send cross-bot messages if feature is enabled
+- All groups can always message their own users (same-chat messaging always allowed)
+
 ### Internal thoughts
 
 If part of your output is internal reasoning rather than something for the user, wrap it in `<internal>` tags:

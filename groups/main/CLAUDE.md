@@ -59,6 +59,24 @@ Keep messages clean and readable for WhatsApp.
 
 This is the **main channel**, which has elevated privileges.
 
+### System Feature Toggles
+
+You can enable/disable system features using MCP tools:
+
+*Inter-bot Communication:*
+- `mcp__nanoclaw__toggle_inter_bot_communication` - Enable/disable bots talking to each other
+- `mcp__nanoclaw__get_system_config` - View current feature status
+- Default: Disabled (security-first)
+
+When inter-bot communication is disabled:
+- Bots can only message their own users (same-chat only)
+- Cross-bot messaging attempts are blocked and logged
+- Main group is always exempt (admin privileges)
+
+When enabled:
+- All bots can send messages to other bots using `send_message` with `target_chat_jid`
+- Useful for delegation and coordination between specialized bots
+
 ## Container Mounts
 
 Main has access to the entire project:
