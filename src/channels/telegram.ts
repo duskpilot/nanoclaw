@@ -25,6 +25,9 @@ export class TelegramChannel implements Channel {
   private assistantName: string;
   private typingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
   private knownChats: Set<string> = new Set();
+  private ackReactions: Map<string, { chatId: number; messageId: number }> = new Map();
+  private ackMessageIds: Map<string, number> = new Map(); // Track acknowledgment message IDs
+  private ackReactionEmoji = '👀'; // Default ACK emoji
 
   constructor(botToken: string, assistantName: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -108,6 +111,18 @@ export class TelegramChannel implements Channel {
           'Message from unregistered Telegram chat',
         );
         return;
+      }
+
+      // Send ACK reaction immediately
+      try {
+        await ctx.react('👀' as const);
+        this.ackReactions.set(msgId, {
+          chatId: ctx.chat.id,
+          messageId: ctx.message.message_id,
+        });
+        logger.debug({ chatJid, msgId }, 'ACK reaction sent');
+      } catch (err) {
+        logger.error({ err, chatJid }, 'Failed to send ACK reaction');
       }
 
       // Deliver message — startMessageLoop() will pick it up
@@ -302,14 +317,39 @@ export class TelegramChannel implements Channel {
 
       const numericId = jid.replace(/^tg:[^:]+:/, '');
 
+      // Remove ACK reaction if it exists (find the original message that triggered this response)
+      // Look through recent ACK reactions for this chat
+      for (const [msgId, reaction] of this.ackReactions.entries()) {
+        if (reaction.chatId.toString() === numericId) {
+          try {
+            // Remove reaction by setting it to empty array
+            await this.bot.api.setMessageReaction(reaction.chatId, reaction.messageId, []);
+            this.ackReactions.delete(msgId);
+            logger.debug({ jid, msgId }, 'ACK reaction removed');
+            break; // Only remove one (the most recent)
+          } catch (err) {
+            logger.debug({ err }, 'Failed to remove ACK reaction');
+          }
+        }
+      }
+
+      // Delete acknowledgment message if it exists
+      const ackMsgId = this.ackMessageIds.get(numericId);
+      if (ackMsgId) {
+        try {
+          await this.bot.api.deleteMessage(numericId, ackMsgId);
+          this.ackMessageIds.delete(numericId);
+          logger.debug({ jid }, 'Acknowledgment message deleted');
+        } catch (err) {
+          logger.debug({ err }, 'Failed to delete acknowledgment message');
+        }
+      }
+
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
-      const chunks =
-        text.length <= MAX_LENGTH
-          ? [text]
-          : Array.from({ length: Math.ceil(text.length / MAX_LENGTH) }, (_, i) =>
-              text.slice(i * MAX_LENGTH, (i + 1) * MAX_LENGTH),
-            );
+
+      // Use smart paragraph chunking
+      const chunks = this.chunkByParagraph(text, MAX_LENGTH);
 
       for (const chunk of chunks) {
         try {
@@ -321,10 +361,59 @@ export class TelegramChannel implements Channel {
           await this.bot.api.sendMessage(numericId, chunk);
         }
       }
-      logger.info({ jid, length: text.length }, 'Telegram message sent');
+      logger.info({ jid, length: text.length, chunks: chunks.length }, 'Telegram message sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
     }
+  }
+
+  /**
+   * Send instant acknowledgment message
+   * Returns message ID for later deletion/editing
+   */
+  async sendAck(jid: string, ackText: string): Promise<void> {
+    if (!this.bot) return;
+
+    try {
+      const numericId = jid.replace(/^tg:[^:]+:/, '');
+      const msg = await this.bot.api.sendMessage(numericId, ackText);
+      this.ackMessageIds.set(numericId, msg.message_id);
+      logger.debug({ jid }, 'Acknowledgment message sent');
+    } catch (err) {
+      logger.error({ err, jid }, 'Failed to send acknowledgment');
+    }
+  }
+
+  /**
+   * Smart paragraph-aware chunking for better readability
+   */
+  private chunkByParagraph(text: string, maxLength: number): string[] {
+    if (text.length <= maxLength) return [text];
+
+    const chunks: string[] = [];
+    const paragraphs = text.split(/\n\n+/);
+
+    let currentChunk = '';
+    for (const para of paragraphs) {
+      if (currentChunk.length + para.length + 2 <= maxLength) {
+        currentChunk += (currentChunk ? '\n\n' : '') + para;
+      } else {
+        if (currentChunk) chunks.push(currentChunk);
+        if (para.length > maxLength) {
+          // Paragraph too long, split by sentences or just hard-split
+          let remaining = para;
+          while (remaining.length > 0) {
+            chunks.push(remaining.slice(0, maxLength));
+            remaining = remaining.slice(maxLength);
+          }
+          currentChunk = '';
+        } else {
+          currentChunk = para;
+        }
+      }
+    }
+    if (currentChunk) chunks.push(currentChunk);
+    return chunks;
   }
 
   isConnected(): boolean {

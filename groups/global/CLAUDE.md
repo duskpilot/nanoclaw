@@ -55,6 +55,15 @@ Text inside `<internal>` tags is logged but not sent to the user. If you've alre
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.
 
+### Instant Response (IMPORTANT for Telegram)
+
+The system now provides *instant acknowledgment* for complex requests:
+- User sees 👀 reaction immediately (ACK reaction)
+- System sends "_Processing..._" message for long tasks
+- Both are auto-removed when you send the actual response
+
+*Your role:* Focus on quality responses. The instant feedback is already handled for you automatically.
+
 ## Your Workspace
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
