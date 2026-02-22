@@ -643,3 +643,36 @@ export function writeGroupsSnapshot(
     ),
   );
 }
+
+/**
+ * Write registered groups snapshot for agents to read
+ */
+export function writeRegisteredGroupsSnapshot(
+  registeredGroups: Record<string, any>,
+): void {
+  // Write to each group's IPC directory so they can discover other chats
+  const ipcBaseDir = path.join(DATA_DIR, 'ipc');
+
+  for (const [jid, group] of Object.entries(registeredGroups)) {
+    const groupFolder = (group as any).folder;
+    if (!groupFolder) continue;
+
+    const groupIpcDir = path.join(ipcBaseDir, groupFolder);
+    fs.mkdirSync(groupIpcDir, { recursive: true });
+
+    const registeredGroupsFile = path.join(groupIpcDir, 'registered_groups.json');
+    fs.writeFileSync(
+      registeredGroupsFile,
+      JSON.stringify(registeredGroups, null, 2),
+    );
+  }
+
+  // Also write to main
+  const mainIpcDir = path.join(ipcBaseDir, 'main');
+  fs.mkdirSync(mainIpcDir, { recursive: true});
+  const mainRegisteredGroupsFile = path.join(mainIpcDir, 'registered_groups.json');
+  fs.writeFileSync(
+    mainRegisteredGroupsFile,
+    JSON.stringify(registeredGroups, null, 2),
+  );
+}

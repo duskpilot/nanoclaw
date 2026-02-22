@@ -17,6 +17,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeRegisteredGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
@@ -87,6 +88,9 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   // Create group folder
   const groupDir = path.join(DATA_DIR, '..', 'groups', group.folder);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+
+  // Update registered groups snapshot for all agents
+  writeRegisteredGroupsSnapshot(registeredGroups);
 
   logger.info(
     { jid, name: group.name, folder: group.folder },
@@ -411,6 +415,9 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+
+  // Write registered groups snapshot for agents
+  writeRegisteredGroupsSnapshot(registeredGroups);
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {

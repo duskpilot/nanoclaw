@@ -190,11 +190,11 @@ server.tool(
   'List all available chats and bots that you can send messages to. Shows registered groups with their JIDs and bot names.',
   {},
   async () => {
-    const registeredGroupsFile = '/workspace/project/data/registered_groups.json';
+    const registeredGroupsFile = path.join(IPC_DIR, 'registered_groups.json');
 
     try {
       if (!fs.existsSync(registeredGroupsFile)) {
-        return { content: [{ type: 'text' as const, text: 'No registered groups found.' }] };
+        return { content: [{ type: 'text' as const, text: 'No registered groups found. The system may need to restart to generate the snapshot.' }] };
       }
 
       const groups = JSON.parse(fs.readFileSync(registeredGroupsFile, 'utf-8'));
