@@ -79,13 +79,7 @@ When enabled:
 
 ## Restarting NanoClaw
 
-To fully restart NanoClaw (kills all agent containers and restarts the service):
-
-```bash
-touch /workspace/project/data/restart-trigger
-```
-
-A systemd path unit on the host watches for this file and runs the restart automatically. **This will terminate your own session**, so send any final message to the user before triggering it.
+Use `mcp__nanoclaw__restart_service` to fully restart NanoClaw (kills all agent containers and restarts the service). **This will terminate your own session**, so send any final message to the user before calling it.
 
 ## Container Mounts
 

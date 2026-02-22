@@ -399,6 +399,17 @@ export async function processTaskIpc(
       }
       break;
 
+    case 'restart':
+      // Only main group can trigger a restart
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized restart attempt blocked');
+        break;
+      }
+      logger.info({ sourceGroup }, 'Restart requested via IPC — exiting (systemd will restart)');
+      // Short delay so the IPC file is cleaned up before exit
+      setTimeout(() => process.exit(0), 500);
+      break;
+
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
   }

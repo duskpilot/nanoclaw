@@ -435,6 +435,33 @@ server.tool(
   },
 );
 
+server.tool(
+  'restart_service',
+  `Restart the NanoClaw service. Kills all running agent containers and restarts the process. Main group only.
+
+WARNING: This will terminate your own session immediately. Send any final messages to the user BEFORE calling this tool.`,
+  {},
+  async () => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can restart the service.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'restart',
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: 'Restart triggered. The service will restart in a few seconds.' }],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

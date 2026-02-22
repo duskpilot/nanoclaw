@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(systemctl status:*)"
+      "Bash(systemctl status:*)",
+      "Bash(docker run:*)",
+      "Bash(head:*)"
     ]
   }
 }
