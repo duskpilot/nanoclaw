@@ -45,8 +45,7 @@ export class TelegramChannel implements Channel {
           : (ctx.chat as any).title || 'Unknown';
 
       ctx.reply(
-        `Chat ID: \`tg:${this.assistantName}:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
-        { parse_mode: 'Markdown' },
+        `Chat ID: tg:${this.assistantName}:${chatId}\nName: ${chatName}\nType: ${chatType}`,
       );
     });
 
@@ -309,14 +308,8 @@ export class TelegramChannel implements Channel {
       const chunks = this.chunkByParagraph(text, MAX_LENGTH);
 
       for (const chunk of chunks) {
-        try {
-          await this.bot.api.sendMessage(numericId, chunk, {
-            parse_mode: 'Markdown',
-          });
-        } catch {
-          // Markdown parse failed (unbalanced chars etc.) — send as plain text
-          await this.bot.api.sendMessage(numericId, chunk);
-        }
+        // Send as plain text to avoid Telegram markdown parsing issues
+        await this.bot.api.sendMessage(numericId, chunk);
       }
       logger.info({ jid, length: text.length, chunks: chunks.length }, 'Telegram message sent');
     } catch (err) {
