@@ -172,12 +172,9 @@ export class WhatsAppChannel implements Channel {
             msg.message?.videoMessage?.caption ||
             '';
 
-<<<<<<< HEAD
-=======
           // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
           if (!content) continue;
 
->>>>>>> upstream/main
           const sender = msg.key.participant || msg.key.remoteJid || '';
           const senderName = msg.pushName || sender.split('@')[0];
 
