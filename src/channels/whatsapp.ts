@@ -201,6 +201,10 @@ export class WhatsAppChannel implements Channel {
             }
           }
 
+          // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
+          // Check after voice transcription since voice messages have empty content initially
+          if (!finalContent) continue;
+
           this.opts.onMessage(chatJid, {
             id: msg.key.id || '',
             chat_jid: chatJid,
