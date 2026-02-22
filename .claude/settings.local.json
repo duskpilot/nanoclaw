@@ -7,7 +7,10 @@
       "Bash(npm run:*)",
       "Bash(sqlite3:*)",
       "Bash(systemctl:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(pgrep:*)",
+      "Bash(crontab:*)",
+      "Bash(ls:*)"
     ]
   }
 }

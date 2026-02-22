@@ -1,3 +1,4 @@
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -396,6 +397,25 @@ export async function processTaskIpc(
           { data },
           'Invalid register_group request - missing required fields',
         );
+      }
+      break;
+
+    case 'run_update':
+      // Only main group can trigger updates
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized run_update attempt blocked');
+        break;
+      }
+      logger.info({ sourceGroup }, 'Update requested via IPC — running auto-update script');
+      {
+        const scriptPath = path.resolve(process.cwd(), 'scripts/auto-update.sh');
+        execFile('bash', [scriptPath], { cwd: process.cwd() }, (err, stdout, stderr) => {
+          if (err) {
+            logger.error({ err, stderr }, 'Auto-update script failed');
+          } else {
+            logger.info({ stdout: stdout.slice(-500) }, 'Auto-update script completed');
+          }
+        });
       }
       break;
 

@@ -2,7 +2,7 @@
 # Automated NanoClaw update script
 # Pulls latest from upstream, builds, and restarts if changes detected
 
-PROJECT_DIR="/workspace/project"
+PROJECT_DIR="/home/forge/nanoclaw"
 LOG_FILE="$PROJECT_DIR/logs/auto-update.log"
 
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -52,6 +52,10 @@ fi
 
 log "Merge successful!"
 
+# Push merged changes to origin
+log "Pushing to origin..."
+git push origin main 2>&1 | tee -a "$LOG_FILE" || log "WARNING: git push failed (non-fatal)"
+
 # Install dependencies (using legacy-peer-deps to handle zod version flexibility)
 log "Installing dependencies..."
 if ! npm install --legacy-peer-deps 2>&1 | tee -a "$LOG_FILE"; then
@@ -76,6 +80,6 @@ if ! systemctl --user restart nanoclaw 2>&1 | tee -a "$LOG_FILE"; then
     error_exit "Service restart failed"
 fi
 
-log "✓ NanoClaw updated and restarted successfully!"
-log "  Local:  $LOCAL"
-log "  Remote: $REMOTE"
+log "Update complete!"
+log "  Previous: $LOCAL"
+log "  Updated:  $REMOTE"
