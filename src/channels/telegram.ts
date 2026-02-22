@@ -308,8 +308,8 @@ export class TelegramChannel implements Channel {
       const chunks = this.chunkByParagraph(text, MAX_LENGTH);
 
       for (const chunk of chunks) {
-        // Send as plain text to avoid Telegram markdown parsing issues
-        await this.bot.api.sendMessage(numericId, chunk);
+        // Send with MarkdownV2 formatting enabled
+        await this.bot.api.sendMessage(numericId, chunk, { parse_mode: 'MarkdownV2' });
       }
       logger.info({ jid, length: text.length, chunks: chunks.length }, 'Telegram message sent');
     } catch (err) {
