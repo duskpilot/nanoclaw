@@ -16,6 +16,11 @@ export interface TelegramChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+// Streaming configuration
+const STREAM_EDIT_INTERVAL_MS = 2000; // Edit every 2 seconds
+const STREAM_MIN_CHARS = 150; // Minimum chars before starting streaming
+const STREAM_MAX_PREVIEW_CHARS = 4000; // Max preview size (leave buffer for "...")
+
 export class TelegramChannel implements Channel {
   name = 'telegram';
 
@@ -25,6 +30,12 @@ export class TelegramChannel implements Channel {
   private assistantName: string;
   private typingIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
   private knownChats: Set<string> = new Set();
+  private streamingPreviews: Map<string, {
+    messageId: number;
+    lastEdit: number;
+    accumulatedText: string;
+    editTimer: ReturnType<typeof setTimeout> | null;
+  }> = new Map();
 
   constructor(botToken: string, assistantName: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -404,5 +415,158 @@ export class TelegramChannel implements Channel {
     // Send immediately, then repeat every 4s (Telegram shows it for ~5s)
     await send();
     this.typingIntervals.set(jid, setInterval(send, 4000));
+  }
+
+  supportsStreaming(): boolean {
+    return true;
+  }
+
+  async startStreamingMessage(jid: string, initialText: string): Promise<void> {
+    if (!this.bot) return;
+
+    try {
+      const numericId = jid.replace(/^tg:[^:]+:/, '');
+
+      // Send initial preview message (plain text to avoid markdown issues with partial content)
+      const msg = await this.bot.api.sendMessage(numericId, initialText);
+
+      this.streamingPreviews.set(numericId, {
+        messageId: msg.message_id,
+        lastEdit: Date.now(),
+        accumulatedText: initialText,
+        editTimer: null,
+      });
+
+      logger.debug({ jid, messageId: msg.message_id }, 'Started streaming message');
+    } catch (err) {
+      logger.error({ err, jid }, 'Failed to start streaming message');
+    }
+  }
+
+  async updateStreamingMessage(jid: string, additionalText: string): Promise<void> {
+    if (!this.bot) return;
+
+    const numericId = jid.replace(/^tg:[^:]+:/, '');
+    const preview = this.streamingPreviews.get(numericId);
+
+    if (!preview) {
+      logger.debug({ jid }, 'No streaming preview found, ignoring update');
+      return;
+    }
+
+    // Accumulate text
+    preview.accumulatedText = additionalText;
+
+    // Cancel existing timer if any
+    if (preview.editTimer) {
+      clearTimeout(preview.editTimer);
+    }
+
+    // Schedule edit if enough time has passed, otherwise queue it
+    const timeSinceLastEdit = Date.now() - preview.lastEdit;
+    const delay = Math.max(0, STREAM_EDIT_INTERVAL_MS - timeSinceLastEdit);
+
+    preview.editTimer = setTimeout(async () => {
+      try {
+        // Truncate if too long
+        let textToSend = preview.accumulatedText;
+        if (textToSend.length > STREAM_MAX_PREVIEW_CHARS) {
+          textToSend = textToSend.substring(0, STREAM_MAX_PREVIEW_CHARS) + '\n\n...';
+        }
+
+        await this.bot!.api.editMessageText(
+          numericId,
+          preview.messageId,
+          textToSend,
+        );
+
+        preview.lastEdit = Date.now();
+        preview.editTimer = null;
+
+        logger.debug({ jid, length: textToSend.length }, 'Updated streaming message');
+      } catch (err) {
+        // Edit failures are non-fatal (message might be deleted, too old, etc.)
+        logger.debug({ err, jid }, 'Failed to edit streaming message');
+      }
+    }, delay);
+  }
+
+  async finalizeStreamingMessage(jid: string, finalText: string): Promise<void> {
+    if (!this.bot) return;
+
+    const numericId = jid.replace(/^tg:[^:]+:/, '');
+    const preview = this.streamingPreviews.get(numericId);
+
+    if (preview) {
+      // Cancel any pending edit
+      if (preview.editTimer) {
+        clearTimeout(preview.editTimer);
+      }
+
+      try {
+        // If final text is significantly different or uses paragraph chunking, send as new message
+        // Otherwise, do final edit with markdown
+        if (finalText.length > STREAM_MAX_PREVIEW_CHARS) {
+          // Too long for single message, use paragraph chunking
+          const chunks = this.chunkByParagraph(finalText, 4096);
+
+          // Delete preview or edit to first chunk
+          try {
+            await this.bot.api.editMessageText(numericId, preview.messageId, chunks[0], {
+              parse_mode: 'Markdown',
+            });
+          } catch {
+            // Fallback to plain text
+            await this.bot.api.editMessageText(numericId, preview.messageId, chunks[0]);
+          }
+
+          // Send remaining chunks as new messages
+          for (let i = 1; i < chunks.length; i++) {
+            try {
+              await this.bot.api.sendMessage(numericId, chunks[i], {
+                parse_mode: 'Markdown',
+              });
+            } catch {
+              await this.bot.api.sendMessage(numericId, chunks[i]);
+            }
+          }
+        } else {
+          // Final edit with markdown
+          try {
+            await this.bot.api.editMessageText(numericId, preview.messageId, finalText, {
+              parse_mode: 'Markdown',
+            });
+          } catch {
+            // Markdown failed, try plain text
+            await this.bot.api.editMessageText(numericId, preview.messageId, finalText);
+          }
+        }
+
+        logger.debug({ jid, length: finalText.length }, 'Finalized streaming message');
+      } catch (err) {
+        // If final edit fails, send as new message
+        logger.debug({ err, jid }, 'Failed to finalize streaming message, sending as new');
+        await this.sendMessage(jid, finalText);
+      }
+
+      // Cleanup
+      this.streamingPreviews.delete(numericId);
+    } else {
+      // No preview, just send normally
+      await this.sendMessage(jid, finalText);
+    }
+  }
+
+  async cancelStreamingMessage(jid: string): Promise<void> {
+    const numericId = jid.replace(/^tg:[^:]+:/, '');
+    const preview = this.streamingPreviews.get(numericId);
+
+    if (preview) {
+      if (preview.editTimer) {
+        clearTimeout(preview.editTimer);
+      }
+      this.streamingPreviews.delete(numericId);
+      logger.debug({ jid }, 'Cancelled streaming message');
+    }
   }
 }
