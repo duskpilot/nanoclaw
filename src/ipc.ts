@@ -74,13 +74,39 @@ export function startIpcWatcher(deps: IpcDeps): void {
               if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
+                const isSameGroup = targetGroup && targetGroup.folder === sourceGroup;
+                const isCrossBotMessage = !isSameGroup;
+
+                // Check inter-bot communication feature flag
+                if (isCrossBotMessage && !isMain) {
+                  const configPath = path.join(DATA_DIR, 'system_config.json');
+                  let interBotEnabled = false;
+                  try {
+                    if (fs.existsSync(configPath)) {
+                      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+                      interBotEnabled = config.features?.inter_bot_communication?.enabled || false;
+                    }
+                  } catch (err) {
+                    logger.error({ err }, 'Error reading system config');
+                  }
+
+                  if (!interBotEnabled) {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'Inter-bot communication disabled - message blocked',
+                    );
+                    fs.unlinkSync(filePath);
+                    continue;
+                  }
+                }
+
                 if (
                   isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
+                  isSameGroup
                 ) {
                   await deps.sendMessage(data.chatJid, data.text);
                   logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
+                    { chatJid: data.chatJid, sourceGroup, crossBot: isCrossBotMessage },
                     'IPC message sent',
                   );
                 } else {
@@ -371,6 +397,29 @@ export async function processTaskIpc(
           'Invalid register_group request - missing required fields',
         );
       }
+      break;
+
+    case 'restart':
+      // Only main group can trigger a restart
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized restart attempt blocked');
+        break;
+      }
+      logger.info({ sourceGroup }, 'Restart requested via IPC — exiting (systemd will restart)');
+      // Save restart context so we can notify after coming back up
+      try {
+        const restartMarkerPath = path.join(DATA_DIR, 'restart-pending.json');
+        // Find which chat JIDs belong to this group
+        const allGroups = deps.registeredGroups();
+        const restartJids = Object.entries(allGroups)
+          .filter(([, g]) => g.folder === sourceGroup)
+          .map(([jid]) => jid);
+        fs.writeFileSync(restartMarkerPath, JSON.stringify({ sourceGroup, chatJids: restartJids }));
+      } catch (err) {
+        logger.warn({ err }, 'Failed to write restart marker');
+      }
+      // Short delay so the IPC file is cleaned up before exit
+      setTimeout(() => process.exit(0), 500);
       break;
 
     default:

@@ -123,6 +123,11 @@ export class GroupQueue {
     );
   }
 
+  isActive(groupJid: string): boolean {
+    const state = this.groups.get(groupJid);
+    return state?.active ?? false;
+  }
+
   registerProcess(groupJid: string, proc: ChildProcess, containerName: string, groupFolder?: string): void {
     const state = this.getGroup(groupJid);
     state.process = proc;

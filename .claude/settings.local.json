@@ -1,17 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx tsx:*)",
-      "Bash(npm test:*)",
+      "Bash(systemctl status:*)",
+      "Bash(docker run:*)",
+      "Bash(head:*)",
       "Bash(npm run:*)",
-      "Bash(/home/forge/nanoclaw/.claude/skills/setup/scripts/06-register-channel.sh:*)",
-      "Bash(systemctl:*)",
-      "Bash(grep:*)",
-      "Bash(node:*)",
-      "Bash(tail:*)",
-      "Bash(journalctl:*)",
       "Bash(sqlite3:*)",
-      "Bash(sleep 1:*)"
+      "Bash(systemctl:*)",
+      "Bash(git:*)"
     ]
   }
 }

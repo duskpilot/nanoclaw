@@ -7,16 +7,20 @@ import {
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
+  TELEGRAM_BOTS,
+  TELEGRAM_ONLY,
   TRIGGER_PATTERN,
 } from './config.js';
 import { WhatsAppChannel } from './channels/whatsapp.js';
+import { TelegramChannel } from './channels/telegram.js';
 import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeRegisteredGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
-import { cleanupOrphans, ensureContainerRuntimeRunning } from './container-runtime.js';
+import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import {
   getAllChats,
   getAllRegisteredGroups,
@@ -85,6 +89,9 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   const groupDir = path.join(DATA_DIR, '..', 'groups', group.folder);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
+  // Update registered groups snapshot for all agents
+  writeRegisteredGroupsSnapshot(registeredGroups);
+
   logger.info(
     { jid, name: group.name, folder: group.folder },
     'Group registered',
@@ -123,10 +130,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (!group) return true;
 
   const channel = findChannel(channels, chatJid);
-  if (!channel) {
-    console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
-    return true;
-  }
+  if (!channel) return true;
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
@@ -173,12 +177,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let outputSentToUser = false;
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
+    // Output callback — called for each agent result
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
@@ -302,7 +307,7 @@ async function startMessageLoop(): Promise<void> {
   }
   messageLoopRunning = true;
 
-  logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
+  logger.info(`NanoClaw running (trigger: ${TRIGGER_PATTERN})`);
 
   while (true) {
     try {
@@ -332,10 +337,7 @@ async function startMessageLoop(): Promise<void> {
           if (!group) continue;
 
           const channel = findChannel(channels, chatJid);
-          if (!channel) {
-            console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
-            continue;
-          }
+          if (!channel) continue;
 
           const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
@@ -374,8 +376,10 @@ async function startMessageLoop(): Promise<void> {
               logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
             );
           } else {
-            // No active container — enqueue for a new one
-            queue.enqueueMessageCheck(chatJid);
+            // No active container — enqueue for a new one (guard against race with recovery)
+            if (!queue.isActive(chatJid)) {
+              queue.enqueueMessageCheck(chatJid);
+            }
           }
         }
       }
@@ -394,7 +398,7 @@ function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
     const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
     const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
-    if (pending.length > 0) {
+    if (pending.length > 0 && !queue.isActive(chatJid)) {
       logger.info(
         { group: group.name, pendingCount: pending.length },
         'Recovery: found unprocessed messages',
@@ -409,11 +413,41 @@ function ensureContainerSystemRunning(): void {
   cleanupOrphans();
 }
 
+/**
+ * Acquire a PID-based process lock to prevent multiple instances.
+ * Defense-in-depth alongside systemd KillMode=control-group.
+ */
+function acquireProcessLock(): void {
+  const lockPath = path.join(DATA_DIR, 'nanoclaw.lock');
+  try {
+    const existingPid = parseInt(fs.readFileSync(lockPath, 'utf-8').trim(), 10);
+    if (existingPid && existingPid !== process.pid) {
+      try {
+        process.kill(existingPid, 0); // Signal 0 = check if process exists
+        logger.error({ pid: existingPid }, 'Another NanoClaw instance is already running');
+        process.exit(1);
+      } catch {
+        logger.warn({ stalePid: existingPid }, 'Removing stale lock file');
+      }
+    }
+  } catch {
+    // No lock file exists, proceed
+  }
+  fs.writeFileSync(lockPath, process.pid.toString());
+  process.on('exit', () => {
+    try { fs.unlinkSync(lockPath); } catch {}
+  });
+}
+
 async function main(): Promise<void> {
+  acquireProcessLock();
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
   loadState();
+
+  // Write registered groups snapshot for agents
+  writeRegisteredGroupsSnapshot(registeredGroups);
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
@@ -434,9 +468,38 @@ async function main(): Promise<void> {
   };
 
   // Create and connect channels
-  whatsapp = new WhatsAppChannel(channelOpts);
-  channels.push(whatsapp);
-  await whatsapp.connect();
+  if (!TELEGRAM_ONLY) {
+    whatsapp = new WhatsAppChannel(channelOpts);
+    channels.push(whatsapp);
+    await whatsapp.connect();
+  }
+
+  for (const bot of TELEGRAM_BOTS) {
+    const telegram = new TelegramChannel(bot.token, bot.name, channelOpts);
+    channels.push(telegram);
+    await telegram.connect();
+  }
+
+  // Check for restart marker and notify user we're back
+  const restartMarkerPath = path.join(DATA_DIR, 'restart-pending.json');
+  try {
+    if (fs.existsSync(restartMarkerPath)) {
+      const marker = JSON.parse(fs.readFileSync(restartMarkerPath, 'utf-8'));
+      fs.unlinkSync(restartMarkerPath);
+      if (marker.chatJids && Array.isArray(marker.chatJids)) {
+        for (const jid of marker.chatJids) {
+          const channel = findChannel(channels, jid);
+          if (channel) {
+            channel.sendMessage(jid, 'Restarted successfully.').catch((err) =>
+              logger.warn({ jid, err }, 'Failed to send restart notification'),
+            );
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to process restart marker');
+  }
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
@@ -446,10 +509,7 @@ async function main(): Promise<void> {
     onProcess: (groupJid, proc, containerName, groupFolder) => queue.registerProcess(groupJid, proc, containerName, groupFolder),
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
-      if (!channel) {
-        console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
-        return;
-      }
+      if (!channel) return;
       const text = formatOutbound(rawText);
       if (text) await channel.sendMessage(jid, text);
     },

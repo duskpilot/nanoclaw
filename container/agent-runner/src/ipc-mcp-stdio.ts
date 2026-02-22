@@ -45,11 +45,14 @@ server.tool(
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
+    target_chat_jid: z.string().optional().describe('(Optional) Send to a different chat. Use format "tg:BotName:chatId" for Telegram or WhatsApp JID. Defaults to current chat. Main group can send to any chat; other groups can only send to their own chat.'),
   },
   async (args) => {
+    const targetJid = args.target_chat_jid || chatJid;
+
     const data: Record<string, string | undefined> = {
       type: 'message',
-      chatJid,
+      chatJid: targetJid,
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,
@@ -58,7 +61,8 @@ server.tool(
 
     writeIpcFile(MESSAGES_DIR, data);
 
-    return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+    const destination = targetJid === chatJid ? 'current chat' : targetJid;
+    return { content: [{ type: 'text' as const, text: `Message sent to ${destination}.` }] };
   },
 );
 
@@ -182,6 +186,55 @@ server.tool(
 );
 
 server.tool(
+  'list_chats',
+  'List all available chats and bots that you can send messages to. Shows registered groups with their JIDs and bot names.',
+  {},
+  async () => {
+    const registeredGroupsFile = path.join(IPC_DIR, 'registered_groups.json');
+
+    try {
+      if (!fs.existsSync(registeredGroupsFile)) {
+        return { content: [{ type: 'text' as const, text: 'No registered groups found. The system may need to restart to generate the snapshot.' }] };
+      }
+
+      const groups = JSON.parse(fs.readFileSync(registeredGroupsFile, 'utf-8'));
+      const entries = Object.entries(groups);
+
+      if (entries.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No registered groups found.' }] };
+      }
+
+      let output = '*Available Chats:*\n\n';
+
+      for (const [jid, group] of entries) {
+        const g = group as { name: string; folder: string; trigger: string };
+
+        // Extract bot name from JID if it's Telegram
+        let botInfo = '';
+        if (jid.startsWith('tg:')) {
+          const parts = jid.split(':');
+          if (parts.length >= 2) {
+            botInfo = ` (Bot: ${parts[1]})`;
+          }
+        }
+
+        output += `• *${g.name}*${botInfo}\n`;
+        output += `  JID: \`${jid}\`\n`;
+        output += `  Trigger: ${g.trigger}\n\n`;
+      }
+
+      output += '\nTo send a message to another chat, use the `send_message` tool with `target_chat_jid` parameter.';
+
+      return { content: [{ type: 'text' as const, text: output }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading chats: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
+server.tool(
   'pause_task',
   'Pause a scheduled task. It will not run until resumed.',
   { task_id: z.string().describe('The task ID to pause') },
@@ -270,6 +323,141 @@ Use available_groups.json to find the JID for a group. The folder name should be
 
     return {
       content: [{ type: 'text' as const, text: `Group "${args.name}" registered. It will start receiving messages immediately.` }],
+    };
+  },
+);
+
+server.tool(
+  'toggle_inter_bot_communication',
+  `Enable or disable inter-bot communication feature. Main group only.
+
+When enabled, bots can send messages to each other using the send_message tool with target_chat_jid parameter.
+When disabled, only same-chat messaging is allowed (bots can only message their own users).
+
+This is a security feature to prevent unauthorized cross-bot messaging.`,
+  {
+    enable: z.boolean().describe('true to enable, false to disable'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can toggle this feature.' }],
+        isError: true,
+      };
+    }
+
+    const configPath = '/workspace/project/data/system_config.json';
+
+    try {
+      let config: any = {
+        features: {
+          inter_bot_communication: {
+            enabled: false,
+            description: "Allow bots to send messages to each other via send_message tool",
+            requires_admin: true
+          }
+        },
+        admin_groups: ["main"],
+        last_updated: new Date().toISOString()
+      };
+
+      // Read existing config if it exists
+      if (fs.existsSync(configPath)) {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      }
+
+      // Update the setting
+      config.features = config.features || {};
+      config.features.inter_bot_communication = config.features.inter_bot_communication || {};
+      config.features.inter_bot_communication.enabled = args.enable;
+      config.last_updated = new Date().toISOString();
+
+      // Write back
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+      const status = args.enable ? 'enabled' : 'disabled';
+      return {
+        content: [{ type: 'text' as const, text: `Inter-bot communication ${status}. Bots can ${args.enable ? 'now' : 'no longer'} send messages to each other.` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error updating config: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'get_system_config',
+  'Get current system configuration including feature toggles. Main group only.',
+  {},
+  async () => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can view system config.' }],
+        isError: true,
+      };
+    }
+
+    const configPath = '/workspace/project/data/system_config.json';
+
+    try {
+      if (!fs.existsSync(configPath)) {
+        return {
+          content: [{ type: 'text' as const, text: 'No system config found. Use toggle_inter_bot_communication to create one.' }],
+        };
+      }
+
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+      let output = '*System Configuration:*\n\n';
+      output += `*Features:*\n`;
+
+      if (config.features?.inter_bot_communication) {
+        const ibc = config.features.inter_bot_communication;
+        output += `• Inter-bot Communication: ${ibc.enabled ? '✓ Enabled' : '✗ Disabled'}\n`;
+        output += `  ${ibc.description}\n`;
+      }
+
+      output += `\n*Last Updated:* ${config.last_updated || 'Unknown'}`;
+
+      return {
+        content: [{ type: 'text' as const, text: output }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading config: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'restart_service',
+  `Restart the NanoClaw service. Kills all running agent containers and restarts the process. Main group only.
+
+WARNING: This will terminate your own session immediately. Send any final messages to the user BEFORE calling this tool.`,
+  {},
+  async () => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can restart the service.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'restart',
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: 'Restart triggered. The service will restart in a few seconds.' }],
     };
   },
 );
