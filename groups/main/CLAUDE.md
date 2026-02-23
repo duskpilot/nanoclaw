@@ -83,11 +83,11 @@ Use `mcp__nanoclaw__restart_service` to fully restart NanoClaw (kills all agent 
 
 ## Container Mounts
 
-Main has access to the entire project:
+Main has read-only access to the project and read-write access to its group folder:
 
 | Container Path | Host Path | Access |
 |----------------|-----------|--------|
-| `/workspace/project` | Project root | read-write |
+| `/workspace/project` | Project root | read-only |
 | `/workspace/group` | `groups/main/` | read-write |
 
 Key paths inside the container:
