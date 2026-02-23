@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail
 # Automated NanoClaw update script
 # Pulls latest from upstream, builds, and restarts if changes detected
 
